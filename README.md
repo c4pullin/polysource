@@ -1,6 +1,6 @@
 # polysource
 
-External editor tooling for Polytoria 2.0. polysource reads the project's `.poly` world and writes a `sourcemap.json` that JohnnyMorganz's [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) can read, giving you autocomplete for the entire instance tree. It also repairs the type definitions the Creator generates so they work with current luau-lsp, and lets you require modules with resolved types.
+External editor tooling for Polytoria 2.0. polysource reads the project's `.poly` world and writes a `sourcemap.json` that JohnnyMorganz's [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) can read, giving you autocomplete for the entire instance tree. It also ships a fixed-up Polytoria type definition file, and lets you require modules with resolved types.
 
 Works in any editor that runs luau-lsp: VS Code, Neovim, Zed, and more.
 
@@ -13,7 +13,7 @@ Works in any editor that runs luau-lsp: VS Code, Neovim, Zed, and more.
 - Full instance-tree autocomplete from any script, as shown above.
 - Module autocomplete. `require()` calls resolve to their files, so `require(game.ScriptService.MyModule)` or `require(script.Parent.MyModule)` shows the module's members instead of `any`. 
   Why `game` and not `world`? See [Typed require()](#typed-require).
-- Generates a repaired and patched `def.modern.luau` for current (1.69+) luau-lsp next to the original one in `.poly/luau/`, with the `world` global patched so the sourcemap tree is reachable, and Polytoria's `require()` declaration removed so luau-lsp's own magic module resolution takes over.
+- Writes `def.new.luau`, a corrected Polytoria type definition file for current luau-lsp with patched `world` and `require()` definitions. See [Definition file](#definition-file).
 - A `--watch` mode that regenerates the sourcemap whenever your world changes.
 
 Some tradeoffs come with this, detailed under [Known limitations](#known-limitations).
@@ -42,6 +42,12 @@ Two ways to get typed modules:
 
 Every option besides plain `script`-relative `require()` is a workaround around luau-lsp's hardcoded resolution, each with its own edge cases (like exported types not showing up): use them at your own discretion.
 
+## Definition file
+
+`polysource defs` writes `def.new.luau`, a definition file for current luau-lsp with the `world` global patched so the sourcemap tree is reachable through it and `require()`'s definition removed so luau-lsp's own magic module resolution can take over.
+
+The embedded definition file was hand-fixed by [arlocomotive](https://github.com/arlocomotive) (shoutout to them) to actually match Polytoria's API where the Creator's own definitions fall short, and kept up to date with current luau-lsp syntax.
+
 ## Install
 
 - Have Go installed?
@@ -55,10 +61,9 @@ Every option besides plain `script`-relative `require()` is a workaround around 
 ## Usage
 
 ```bash
-polysource .                # generate sourcemap.json in the current project
-polysource --watch .        # regenerate whenever the world changes
-polysource defs .           # repair def.d.luau and write def.modern.luau
-polysource defs --legacy .  # same, but keep old class syntax (pre-1.69 luau-lsp)
+polysource .           # generate sourcemap.json in the current project
+polysource --watch .   # regenerate whenever the world changes
+polysource defs .      # write def.new.luau, a patched Polytoria definition file
 polysource --version
 ```
 By default polysource reads `project.ptproj` and uses the world it points to.
@@ -72,9 +77,8 @@ Change these luau-lsp settings in the settings UI or file of your editor of choi
 - `luau-lsp.sourcemap.generatorCommand: "polysource --watch ."`
 - `luau-lsp.platform.type: "roblox"` (sourcemap processing only runs on the `roblox` platform)
 
-Run `polysource defs .` to create the repaired and patched definition file.
-To load the repaired type definitions, add the generated `.poly/luau/def.modern.luau` to `luau-lsp.types.definitionFiles` in the settings.
-If you don't want the updated syntax, use the `--legacy` flag.
+Run `polysource defs .` to write the definition file.
+To load it, add the generated `.poly/luau/def.new.luau` to `luau-lsp.types.definitionFiles` in the settings.
 
 The `roblox` platform loads Roblox's bundled types. To reduce the clutter, disable globals through `luau-lsp.types.disabledGlobals`, for example:
   ```json
@@ -94,9 +98,7 @@ The `roblox` platform loads Roblox's bundled types. To reduce the clutter, disab
 
   Scripts are linked files. Each instance stores a random GUID in its `LinkedScript` property, and the mapping from GUID to file path lives in `.meta` sidecars next to the scripts. polysource scans those sidecars, then builds a sourcemap where every linked script points at its file.
 
-  The `defs` command converts the Creator's `def.d.luau` from the old `declare class` syntax to `declare extern type`, which modern luau-lsp requires.
-  It also patches `world` so the sourcemap tree is reachable through it, and removes the Creator's `require()` declaration so luau-lsp's own magic module resolution can take over.
-  Pass `--legacy` to skip the class syntax conversion for older luau-lsp versions.
+  The `defs` command writes out a definition file bundled into the polysource binary (see [Definition file](#definition-file)).
 </details>
 
 ## Known limitations
@@ -118,6 +120,9 @@ The `roblox` platform loads Roblox's bundled types. To reduce the clutter, disab
   Also, when indexing `world` by using `Instance.Parent` it shows up as only `DataModel`.
 
 - One sourcemap per world. Use `--world` to target a different world.
+
+- `def.new.luau` is bundled into the polysource binary. If Polytoria's API changes, it can lag behind until a new polysource release updates it.
+  If something's missing or wrong, check for a newer polysource release first, then open an issue.
 
 ## Development
 Go 1.26.5+

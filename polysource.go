@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,7 +11,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -52,11 +52,10 @@ const (
 	ProgramName = "polysource"
 
 	SourcemapUsage = "  " + ProgramName + " [flags] <project-dir>\t\tgenerate sourcemap (default)"
-	DefsUsage      = "  " + ProgramName + " defs [flags] <project-dir>\t\tgenerate a modernized and patched copy of def.d.luau"
+	DefsUsage      = "  " + ProgramName + " defs <project-dir>\t\twrite def.new.luau, a patched Polytoria definition file"
 
 	LuauFolderPath = ".poly/luau/"
-	DefFileName    = "def.d.luau"
-	NewDefFileName = "def.modern.luau"
+	NewDefFileName = "def.new.luau"
 
 	WorldFileExt = ".poly"
 	MetaFileExt  = ".meta"
@@ -69,12 +68,10 @@ const (
 	DebounceTimeMs = 10
 )
 
-var (
-	classOpenRe   = regexp.MustCompile(`(?m)^declare class ([A-Za-z0-9_]+)( extends [A-Za-z0-9_]+)?$`)
-	classInlineRe = regexp.MustCompile(`(?m)^declare class ([A-Za-z0-9_]+)( extends [A-Za-z0-9_]+)? end$`)
+//go:embed def.new.luau
+var newDefs []byte
 
-	version = "dev"
-)
+var version = "dev"
 
 func main() {
 	args := os.Args[1:]
@@ -98,7 +95,6 @@ func main() {
 
 func runDefs(args []string) error {
 	fs := flag.NewFlagSet("polysource defs", flag.ExitOnError)
-	legacyFlag := fs.Bool("legacy", false, "keep pre-1.69 declare class syntax. Still patches world and require()")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage:")
 		fmt.Fprintln(os.Stderr, DefsUsage)
@@ -111,7 +107,7 @@ func runDefs(args []string) error {
 	if err != nil {
 		return err
 	}
-	return convertDefs(root, *legacyFlag)
+	return generateDefs(root)
 }
 
 func runSourcemap(args []string) error {
@@ -167,30 +163,17 @@ func resolveRoot(fs *flag.FlagSet) (string, error) {
 	}
 }
 
-func convertDefs(root string, legacyFlag bool) error {
-	data, err := os.ReadFile(filepath.Join(root, LuauFolderPath, DefFileName))
-	if err != nil {
-		return fmt.Errorf("read defs: %w", err)
-	}
-
-	out := data
-	if !legacyFlag {
-		out = classOpenRe.ReplaceAll(out, []byte("declare extern type $1$2 with"))
-		out = classInlineRe.ReplaceAll(out, []byte("declare extern type $1$2 with\nend"))
-	}
-	out = bytes.Replace(out, []byte("declare world: World"), []byte("declare world: World & DataModel"), 1)
-	out = bytes.Replace(out, []byte("\ndeclare function require(moduleScript: (ModuleScript)): any\n"), []byte(""), 1)
-
+func generateDefs(root string) error {
 	dstPath := filepath.Join(root, LuauFolderPath, NewDefFileName)
 
-	wrote, err := writeIfChanged(dstPath, out)
+	wrote, err := writeIfChanged(dstPath, newDefs)
 	if err != nil {
 		return fmt.Errorf("write defs: %w", err)
 	}
 	if wrote {
 		fmt.Printf("wrote %s\nadd \"./%s\" to luau-lsp.types.definitionFiles in your editor's settings\n", dstPath, filepath.Join(LuauFolderPath, NewDefFileName))
 	} else {
-		fmt.Println("already converted\nnothing to do")
+		fmt.Println("already up to date\nnothing to do")
 	}
 
 	return nil
@@ -203,36 +186,6 @@ func readProjectFile(root, filename string) (*PolyProject, error) {
 	}
 
 	var s PolyProject
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", filename, err)
-	}
-
-	return &s, nil
-}
-
-func readWorldFile(root, filename string) (*PolyWorld, error) {
-	compressedData, err := os.ReadFile(filepath.Join(root, filename))
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", filename, err)
-	}
-
-	var data []byte
-	if len(compressedData) > 0 && compressedData[0] == '{' {
-		data = compressedData
-	} else {
-		decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
-		if err != nil {
-			return nil, fmt.Errorf("create zstd decoder: %w", err)
-		}
-		defer decoder.Close()
-
-		data, err = decoder.DecodeAll(compressedData, nil)
-		if err != nil {
-			return nil, fmt.Errorf("decompress %s: %w", filename, err)
-		}
-	}
-
-	var s PolyWorld
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
@@ -291,6 +244,36 @@ func generate(root string, path string) error {
 	sourcemap := toSourcemap(world, strings.TrimSuffix(filepath.Base(path), WorldFileExt), metas)
 
 	return emitSourcemap(root, &sourcemap)
+}
+
+func readWorldFile(root, filename string) (*PolyWorld, error) {
+	compressedData, err := os.ReadFile(filepath.Join(root, filename))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", filename, err)
+	}
+
+	var data []byte
+	if len(compressedData) > 0 && compressedData[0] == '{' {
+		data = compressedData
+	} else {
+		decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+		if err != nil {
+			return nil, fmt.Errorf("create zstd decoder: %w", err)
+		}
+		defer decoder.Close()
+
+		data, err = decoder.DecodeAll(compressedData, nil)
+		if err != nil {
+			return nil, fmt.Errorf("decompress %s: %w", filename, err)
+		}
+	}
+
+	var s PolyWorld
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", filename, err)
+	}
+
+	return &s, nil
 }
 
 func scanMetaFiles(root string) (map[string]string, error) {
